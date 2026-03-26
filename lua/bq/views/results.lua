@@ -98,64 +98,116 @@ M.show = function(bufnr)
         end
     end
 
-    -- Box drawing characters
+    -- Sep parts for border lines
     local sep_parts = {}
-    local header_parts = {}
     for _, col in ipairs(cols) do
-        local w = widths[col]
-        table.insert(sep_parts, string.rep("─", w + 2))
-        table.insert(header_parts, " " .. col .. string.rep(" ", w - #col + 1))
+        table.insert(sep_parts, string.rep("─", widths[col] + 2))
     end
 
-    local lines = {}
-    table.insert(lines, "┌" .. table.concat(sep_parts, "┬") .. "┐")
-    table.insert(lines, "│" .. table.concat(header_parts, "│") .. "│")
-    table.insert(lines, "├" .. table.concat(sep_parts, "┼") .. "┤")
-
-    local ROW_OFFSET = 3  -- 0-based line index of first data row
-    local null_positions = {}
+    -- Build buf_lines: data rows have first char of each cell value as real text.
+    -- The header chrome (top border, column names, middle border) is rendered as
+    -- virt_lines_above on line 0 so it cannot be navigated to.
+    local ROW_OFFSET = 0
+    local buf_lines = {}
+    local row_cells_list = {}
 
     for _, row in ipairs(rows) do
-        local row_parts = {}
-        local col_offset = 1
-        local line_idx = #lines
+        local real_chars = {}
+        local cells = {}
         for _, col in ipairs(cols) do
             local w = widths[col]
             local raw = row[col]
             local is_null = raw == nil or raw == vim.NIL
             local val = is_null and "NULL" or tostring(raw):gsub("[\n\r]", " ")
-            local truncated = #val > w
-            if truncated then
-                val = val:sub(1, w - 1) .. "…"
-            end
-            local padded = " " .. val .. string.rep(" ", w - #val + 1)
-            if is_null then
-                table.insert(null_positions, { line_idx, col_offset + 1, col_offset + 1 + #val })
-            end
-            table.insert(row_parts, padded)
-            col_offset = col_offset + #padded + 1
+            if #val > w then val = val:sub(1, w - 1) .. "…" end
+            local first_char = #val > 0 and vim.fn.strcharpart(val, 0, 1) or " "
+            local rest = vim.fn.strcharpart(val, 1)
+            local trail = string.rep(" ", w - #val + 1)
+            table.insert(real_chars, first_char)
+            table.insert(cells, { first_char = first_char, rest = rest, trail = trail, is_null = is_null })
         end
-        table.insert(lines, "│" .. table.concat(row_parts, "│") .. "│")
+        table.insert(buf_lines, table.concat(real_chars))
+        table.insert(row_cells_list, cells)
     end
 
-    table.insert(lines, "└" .. table.concat(sep_parts, "┴") .. "┘")
-    table.insert(lines, "")
-    table.insert(lines, string.format("  %d row%s  (press <CR> on a row to preview full values)",
+    table.insert(buf_lines, "")  -- bottom border
+    table.insert(buf_lines, "")  -- spacer
+    table.insert(buf_lines, string.format(
+        "  %d row%s  (press <CR> on a row to preview full values)",
         #rows, #rows == 1 and "" or "s"))
+    util.set_lines(bufnr, 0, -1, false, buf_lines)
 
-    util.set_lines(bufnr, 0, -1, false, lines)
-
+    -- All visual structure is rendered as inline virtual text
     local ns = globals.NAMESPACE
 
-    vim.hl.range(bufnr, ns, "BQHeader", { 1, 0 }, { 1, #lines[2] })
-
-    for _, pos in ipairs(null_positions) do
-        vim.hl.range(bufnr, ns, "BQNullValue", { pos[1], pos[2] }, { pos[1], pos[3] })
+    local function place_border(line_idx, left, mid, right)
+        api.nvim_buf_set_extmark(bufnr, ns, line_idx, 0, {
+            virt_text = { { left .. table.concat(sep_parts, mid) .. right, "BQBorderChar" } },
+            virt_text_pos = "inline",
+        })
     end
 
-    for _, li in ipairs({ 0, 2, #lines - 4 }) do
-        if lines[li + 1] then
-            vim.hl.range(bufnr, ns, "BQBorderChar", { li, 0 }, { li, #lines[li + 1] })
+    place_border(#rows, "└", "┴", "┘")
+
+    -- Header chrome: top border, column names, middle border — rendered as
+    -- virt_lines_above so the cursor cannot navigate to these lines.
+    local header_line = { { "│", "BQBorderChar" } }
+    for _, col in ipairs(cols) do
+        local w = widths[col]
+        table.insert(header_line, { " " .. col .. string.rep(" ", w - #col + 1), "BQHeader" })
+        table.insert(header_line, { "│", "BQBorderChar" })
+    end
+    api.nvim_buf_set_extmark(bufnr, ns, 0, 0, {
+        virt_lines = {
+            { { "┌" .. table.concat(sep_parts, "┬") .. "┐", "BQBorderChar" } },
+            header_line,
+            { { "├" .. table.concat(sep_parts, "┼") .. "┤", "BQBorderChar" } },
+        },
+        virt_lines_above = true,
+    })
+
+    -- Data rows: first char of each value is real text for cursor navigation;
+    -- all surrounding structure (borders, padding, rest of value) is virtual.
+    for i, cells in ipairs(row_cells_list) do
+        local line_idx = ROW_OFFSET + i - 1
+        local n = #cells
+        local byte_off = 0
+
+        -- Prepend "│ " before the first real char
+        api.nvim_buf_set_extmark(bufnr, ns, line_idx, 0, {
+            virt_text = { { "│", "BQBorderChar" }, { " ", "" } },
+            virt_text_pos = "inline",
+            right_gravity = false,
+        })
+
+        for k, cell in ipairs(cells) do
+            local after = byte_off + #cell.first_char
+
+            -- Virtual text after this cell's real char:
+            -- rest of value, trailing padding, delimiter, leading space for next cell
+            local vt = {}
+            if #cell.rest > 0 then
+                table.insert(vt, { cell.rest, cell.is_null and "BQNullValue" or "" })
+            end
+            table.insert(vt, { cell.trail, "" })
+            table.insert(vt, { "│", "BQBorderChar" })
+            if k < n then
+                table.insert(vt, { " ", "" })
+            end
+            api.nvim_buf_set_extmark(bufnr, ns, line_idx, after, {
+                virt_text = vt,
+                virt_text_pos = "inline",
+            })
+
+            -- Highlight the real first char of NULL cells
+            if cell.is_null then
+                api.nvim_buf_set_extmark(bufnr, ns, line_idx, byte_off, {
+                    end_col = after,
+                    hl_group = "BQNullValue",
+                })
+            end
+
+            byte_off = after
         end
     end
 
