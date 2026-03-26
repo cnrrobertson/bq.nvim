@@ -20,8 +20,8 @@
 ---@field position string Split direction: `"above"`, `"below"`, `"left"`, or `"right"`
 
 ---@class bq.PreviewConfig
----@field max_width integer Maximum width of the row preview float (further capped at editor width - 6)
----@field max_height integer Maximum height of the row preview float (further capped at editor height - 6)
+---@field max_width number Maximum width of the preview float. Fractions < 1 are a percentage of editor width (e.g. 0.8 = 80%); integers are absolute columns.
+---@field max_height number Maximum height of the preview float. Fractions < 1 are a percentage of editor height (e.g. 0.6 = 60%); integers are absolute lines.
 
 ---@class bq.Config
 ---@field winbar bq.WinbarConfig Winbar / tab-strip configuration
@@ -53,8 +53,8 @@ local M = {
         position = "below",
     },
     preview = {
-        max_width  = 120,
-        max_height = 40,
+        max_width  = 0.8,
+        max_height = 0.6,
     },
     bq_path = "bq",
     max_results = 1000,

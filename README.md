@@ -42,7 +42,7 @@ require("bq").setup({
     sections = { "results", "stats", "history", "schema" },
   },
   preview = {
-    max_width  = 120,   -- max columns for the row preview float
+    max_width  = 0.9,   -- 90% editor width for preview float
     max_height = 40,    -- max lines for the row preview float
   },
   bq_path = "bq",       -- path to bq CLI
