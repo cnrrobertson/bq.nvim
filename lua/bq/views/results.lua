@@ -216,11 +216,32 @@ M.show = function(bufnr)
         table.insert(sep_parts, string.rep("─", widths[col] + 2))
     end
 
-    -- Build buf_lines: data rows have first char of each cell value as real text.
-    -- The header chrome (top border, column names, middle border) is rendered as
-    -- virt_lines_above on line 0 so it cannot be navigated to.
-    local ROW_OFFSET = 0
-    local buf_lines = {}
+    -- Layout:
+    --   line 0        hint text (real, always visible)
+    --   line 1        header: first char of each col name (real) + inline virt_text
+    --                   virt_lines_above → top border ┌─┐  (non-navigable)
+    --                   virt_lines after → mid border ├─┤  (non-navigable)
+    --   lines 2..2+N-1  data rows (real first chars + inline virt_text)
+    --                   last data row gets virt_lines after → bot border └─┘ (non-navigable)
+    --   line 2+N      spacer
+    local ROW_OFFSET = 2
+
+    local hint_str = string.format("  %d row%s  (<CR> preview row · / search all)",
+        #rows, #rows == 1 and "" or "s")
+
+    -- Build header cells (same first-char pattern as data rows)
+    local hdr_real_chars = {}
+    local hdr_cells      = {}
+    for _, col in ipairs(cols) do
+        local w          = widths[col]
+        local first_char = #col > 0 and vim.fn.strcharpart(col, 0, 1) or " "
+        local rest       = vim.fn.strcharpart(col, 1)
+        local trail      = string.rep(" ", w - #col + 1)
+        table.insert(hdr_real_chars, first_char)
+        table.insert(hdr_cells, { first_char = first_char, rest = rest, trail = trail })
+    end
+
+    local buf_lines      = { hint_str, table.concat(hdr_real_chars) }
     local row_cells_list = {}
 
     for _, row in ipairs(rows) do
@@ -242,41 +263,64 @@ M.show = function(bufnr)
         table.insert(row_cells_list, cells)
     end
 
-    table.insert(buf_lines, "")  -- bottom border
-    table.insert(buf_lines, "")  -- spacer
-    table.insert(buf_lines, string.format(
-        "  %d row%s  (<CR> preview row · / search all)",
-        #rows, #rows == 1 and "" or "s"))
+    table.insert(buf_lines, "")  -- spacer after bottom border
     util.set_lines(bufnr, 0, -1, false, buf_lines)
 
-    -- All visual structure is rendered as inline virtual text
     local ns = globals.NAMESPACE
 
-    local function place_border(line_idx, left, mid, right)
-        api.nvim_buf_set_extmark(bufnr, ns, line_idx, 0, {
-            virt_text = { { left .. table.concat(sep_parts, mid) .. right, "BQBorderChar" } },
-            virt_text_pos = "inline",
-        })
-    end
-
-    place_border(#rows, "└", "┴", "┘")
-
-    -- Header chrome: top border, column names, middle border — rendered as
-    -- virt_lines_above so the cursor cannot navigate to these lines.
-    local header_line = { { "│", "BQBorderChar" } }
-    for _, col in ipairs(cols) do
-        local w = widths[col]
-        table.insert(header_line, { " " .. col .. string.rep(" ", w - #col + 1), "BQHeader" })
-        table.insert(header_line, { "│", "BQBorderChar" })
-    end
+    -- Hint line: style with Comment
     api.nvim_buf_set_extmark(bufnr, ns, 0, 0, {
-        virt_lines = {
-            { { "┌" .. table.concat(sep_parts, "┬") .. "┐", "BQBorderChar" } },
-            header_line,
-            { { "├" .. table.concat(sep_parts, "┼") .. "┤", "BQBorderChar" } },
-        },
+        end_row = 0, end_col = #hint_str, hl_group = "Comment",
+    })
+
+    local top_border = "┌" .. table.concat(sep_parts, "┬") .. "┐"
+    local mid_border = "├" .. table.concat(sep_parts, "┼") .. "┤"
+    local bot_border = "└" .. table.concat(sep_parts, "┴") .. "┘"
+
+    -- Top border: virt_lines_above on header line → cursor cannot navigate to it
+    api.nvim_buf_set_extmark(bufnr, ns, 1, 0, {
+        virt_lines       = { { { top_border, "BQBorderChar" } } },
         virt_lines_above = true,
     })
+    -- Mid border: virt_lines after header line → cursor cannot navigate to it
+    api.nvim_buf_set_extmark(bufnr, ns, 1, 0, {
+        virt_lines = { { { mid_border, "BQBorderChar" } } },
+    })
+    -- Bottom border: virt_lines after last data row → cursor cannot navigate to it
+    api.nvim_buf_set_extmark(bufnr, ns, ROW_OFFSET + #rows - 1, 0, {
+        virt_lines = { { { bot_border, "BQBorderChar" } } },
+    })
+
+    -- Header row: same virtual-text structure as data rows; first char already
+    -- written as real text above. Highlight it with BQHeader.
+    api.nvim_buf_set_extmark(bufnr, ns, 1, 0, {
+        virt_text     = { { "│", "BQBorderChar" }, { " ", "" } },
+        virt_text_pos = "inline",
+        right_gravity = false,
+    })
+    local hbyte_off = 0
+    for k, cell in ipairs(hdr_cells) do
+        local after = hbyte_off + #cell.first_char
+        -- highlight the real first char of the column name
+        api.nvim_buf_set_extmark(bufnr, ns, 1, hbyte_off, {
+            end_col  = after,
+            hl_group = "BQHeader",
+        })
+        local vt = {}
+        if #cell.rest > 0 then
+            table.insert(vt, { cell.rest, "BQHeader" })
+        end
+        table.insert(vt, { cell.trail, "" })
+        table.insert(vt, { "│", "BQBorderChar" })
+        if k < #hdr_cells then
+            table.insert(vt, { " ", "" })
+        end
+        api.nvim_buf_set_extmark(bufnr, ns, 1, after, {
+            virt_text     = vt,
+            virt_text_pos = "inline",
+        })
+        hbyte_off = after
+    end
 
     -- Data rows: first char of each value is real text for cursor navigation;
     -- all surrounding structure (borders, padding, rest of value) is virtual.
