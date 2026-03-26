@@ -20,6 +20,13 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 }
 ```
 
+Using [mini.deps](https://github.com/echasnovski/mini.deps):
+
+```lua
+require("mini.deps").add({ source = "cnrrobertson/bq.nvim" })
+require("bq").setup()
+```
+
 ## Setup
 
 ```lua
@@ -33,6 +40,10 @@ require("bq").setup({
     show_keymap_hints = true,
     default_section = "results",
     sections = { "results", "stats", "history", "schema" },
+  },
+  preview = {
+    max_width  = 120,   -- max columns for the row preview float
+    max_height = 40,    -- max lines for the row preview float
   },
   bq_path = "bq",       -- path to bq CLI
   max_results = 1000,   -- max rows returned per query
