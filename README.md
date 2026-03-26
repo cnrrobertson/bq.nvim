@@ -13,7 +13,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
-  "your-username/bq.nvim",
+  "cnrrobertson/bq.nvim",
   config = function()
     require("bq").setup()
   end,
