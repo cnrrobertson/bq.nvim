@@ -16,16 +16,16 @@ local function open_preview(row, cols)
         if #col > max_key_len then max_key_len = #col end
     end
 
+    -- Build lines (values only) and record each col's start line + line count
+    local col_info = {}
     for _, col in ipairs(cols) do
         local raw = row[col]
         local val = (raw == nil or raw == vim.NIL) and "NULL" or tostring(raw)
-        local label = col .. string.rep(" ", max_key_len - #col) .. "  "
-        -- split value on newlines, indent continuation lines
         local val_lines = vim.split(val, "\n", { plain = true })
-        table.insert(lines, label .. val_lines[1])
-        local indent = string.rep(" ", #label)
+        table.insert(col_info, { col = col, line_idx = #lines, count = #val_lines })
+        table.insert(lines, val_lines[1])
         for i = 2, #val_lines do
-            table.insert(lines, indent .. val_lines[i])
+            table.insert(lines, val_lines[i])
         end
     end
 
@@ -51,17 +51,26 @@ local function open_preview(row, cols)
     vim.wo[win].wrap = true
     vim.wo[win].cursorline = true
 
-    -- highlight keys
+    -- Column names as inline virtual text; values are the real buffer text.
     local ns = globals.NAMESPACE
-    for i, col in ipairs(cols) do
-        -- find the line index for this col (first line of this col's block)
-        local line_idx = 0
-        for j = 1, i - 1 do
-            local r = row[cols[j]]
-            local v = (r == nil or r == vim.NIL) and "NULL" or tostring(r)
-            line_idx = line_idx + #vim.split(v, "\n", { plain = true })
+    local indent = string.rep(" ", max_key_len + 2)
+
+    for _, info in ipairs(col_info) do
+        local label = info.col .. string.rep(" ", max_key_len - #info.col) .. "  "
+        -- Label prepended as virtual text on the first value line
+        api.nvim_buf_set_extmark(buf, ns, info.line_idx, 0, {
+            virt_text     = { { label, "BQHeader" } },
+            virt_text_pos = "inline",
+            right_gravity = false,
+        })
+        -- Matching indent on continuation lines so values stay aligned
+        for j = 1, info.count - 1 do
+            api.nvim_buf_set_extmark(buf, ns, info.line_idx + j, 0, {
+                virt_text     = { { indent, "" } },
+                virt_text_pos = "inline",
+                right_gravity = false,
+            })
         end
-        vim.hl.range(buf, ns, "BQHeader", { line_idx, 0 }, { line_idx, max_key_len })
     end
 
     -- close on q or <Esc>
