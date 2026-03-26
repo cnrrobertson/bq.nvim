@@ -9,6 +9,12 @@ local M = {}
 local api = vim.api
 local MAX_COL_WIDTH = 50
 
+-- Resolve a dimension value: fractions < 1 are treated as a percentage of
+-- `total` (e.g. 0.8 → 80% of editor columns/lines), integers are used as-is.
+local function resolve_dim(val, total)
+    return val < 1 and math.floor(val * total) or val
+end
+
 local function open_preview(row, cols)
     local lines = {}
     local max_key_len = 0
@@ -30,8 +36,10 @@ local function open_preview(row, cols)
     end
 
     local cfg = setup.config.preview
-    local width = math.min(math.max(40, max_key_len + 4 + 60), cfg.max_width, vim.o.columns - 6)
-    local height = math.min(#lines, cfg.max_height, vim.o.lines - 6)
+    local max_w = resolve_dim(cfg.max_width, vim.o.columns)
+    local max_h = resolve_dim(cfg.max_height, vim.o.lines)
+    local width  = math.max(40, math.min(max_w, vim.o.columns - 6))
+    local height = math.max(5,  math.min(#lines, max_h, vim.o.lines - 6))
 
     local buf = api.nvim_create_buf(false, true)
     api.nvim_buf_set_lines(buf, 0, -1, false, lines)
