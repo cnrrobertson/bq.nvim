@@ -19,9 +19,14 @@
 ---@field size number Split size: fraction of editor (< 1) or absolute lines/columns
 ---@field position string Split direction: `"above"`, `"below"`, `"left"`, or `"right"`
 
+---@class bq.PreviewConfig
+---@field max_width integer Maximum width of the row preview float (further capped at editor width - 6)
+---@field max_height integer Maximum height of the row preview float (further capped at editor height - 6)
+
 ---@class bq.Config
 ---@field winbar bq.WinbarConfig Winbar / tab-strip configuration
 ---@field windows bq.WindowsConfig Panel window configuration
+---@field preview bq.PreviewConfig Row preview window configuration
 ---@field bq_path string Path or name of the `bq` CLI executable
 ---@field max_results integer Maximum rows fetched per query
 
@@ -46,6 +51,10 @@ local M = {
     windows = {
         size = 0.35,
         position = "below",
+    },
+    preview = {
+        max_width  = 120,
+        max_height = 40,
     },
     bq_path = "bq",
     max_results = 1000,
