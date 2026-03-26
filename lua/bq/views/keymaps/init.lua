@@ -43,6 +43,7 @@ local function set_keymaps_for_buf(buf)
             "  gr        Re-run last query",
             "  q         Close panel",
             "  <CR>      Preview row (Results) / action (History/Schema)",
+            "  / ?       Search all rows, full text, no truncation (Results)",
             "  -         Go up (Schema)",
             "",
             "bq commands:",
