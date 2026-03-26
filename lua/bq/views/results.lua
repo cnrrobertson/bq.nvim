@@ -2,6 +2,7 @@ local state = require("bq.state")
 local util = require("bq.util")
 local views = require("bq.views")
 local globals = require("bq.globals")
+local setup = require("bq.setup")
 
 local M = {}
 
@@ -28,8 +29,9 @@ local function open_preview(row, cols)
         end
     end
 
-    local width = math.min(math.max(40, max_key_len + 4 + 60), vim.o.columns - 6)
-    local height = math.min(#lines, vim.o.lines - 6)
+    local cfg = setup.config.preview
+    local width = math.min(math.max(40, max_key_len + 4 + 60), cfg.max_width, vim.o.columns - 6)
+    local height = math.min(#lines, cfg.max_height, vim.o.lines - 6)
 
     local buf = api.nvim_create_buf(false, true)
     api.nvim_buf_set_lines(buf, 0, -1, false, lines)
