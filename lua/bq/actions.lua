@@ -147,6 +147,7 @@ M.run_query = function(sql)
     -- Switch to results view and show loading indicator
     state.current_section = "results"
     winbar.refresh_winbar("results")
+    api.nvim_buf_clear_namespace(state.bufs["results"], globals.NAMESPACE, 0, -1)
     util.set_lines(state.bufs["results"], 0, -1, false, { "  Running query…" })
 
     local start_ts = vim.uv.now()
@@ -178,6 +179,7 @@ M.run_query = function(sql)
             for _, line in ipairs(vim.split(raw or "", "\n")) do
                 table.insert(err_lines, "  " .. line)
             end
+            api.nvim_buf_clear_namespace(state.bufs["results"], globals.NAMESPACE, 0, -1)
             util.set_lines(state.bufs["results"], 0, -1, false, err_lines)
             winbar.refresh_winbar("results")
             return
