@@ -89,6 +89,99 @@ local function open_preview(row, cols)
     end
 end
 
+-- Opens a floating window with all rows rendered as full plain text (no
+-- truncation) so that native / and ? search work across the entire result set.
+local function open_search_window(rows, cols)
+    if #rows == 0 then return end
+
+    local ns = globals.NAMESPACE
+    local max_key_len = 0
+    for _, col in ipairs(cols) do
+        if #col > max_key_len then max_key_len = #col end
+    end
+
+    local divider_width = math.max(40, max_key_len + 30)
+    local buf_lines = {}
+    -- hl_marks: { line_idx (0-based), byte_start, byte_end, hl_group }
+    local hl_marks = {}
+
+    for i, row in ipairs(rows) do
+        -- Row divider
+        local divider = string.rep("─", divider_width)
+        local divider_line = " Row " .. i .. " " .. divider
+        table.insert(hl_marks, { #buf_lines, 0, #divider_line, "BQBorderChar" })
+        table.insert(buf_lines, divider_line)
+
+        -- One line per field; multi-line values span additional indented lines
+        for _, col in ipairs(cols) do
+            local raw = row[col]
+            local is_null = raw == nil or raw == vim.NIL
+            local val_str = is_null and "NULL" or tostring(raw):gsub("\r", "")
+            local val_lines = vim.split(val_str, "\n", { plain = true })
+            local pad = string.rep(" ", max_key_len - #col + 2)
+            local indent = string.rep(" ", 2 + #col + #pad)
+            local key_end = 2 + #col
+            local val_start = key_end + #pad
+
+            -- First line: "  fieldname    value"
+            table.insert(hl_marks, { #buf_lines, 2, key_end, "BQHeader" })
+            if is_null then
+                table.insert(hl_marks, { #buf_lines, val_start, val_start + #val_lines[1], "BQNullValue" })
+            end
+            table.insert(buf_lines, "  " .. col .. pad .. val_lines[1])
+
+            -- Continuation lines (if value contained newlines)
+            for li = 2, #val_lines do
+                table.insert(buf_lines, indent .. val_lines[li])
+            end
+        end
+
+        -- Blank line between rows (except after the last)
+        if i < #rows then
+            table.insert(buf_lines, "")
+        end
+    end
+
+    local cfg = setup.config.preview
+    local max_w = resolve_dim(cfg.max_width, vim.o.columns)
+    local max_h = resolve_dim(cfg.max_height, vim.o.lines)
+    local width  = math.max(60, math.min(max_w, vim.o.columns - 4))
+    local height = math.max(10, math.min(max_h, vim.o.lines - 4))
+
+    local buf = api.nvim_create_buf(false, true)
+    api.nvim_buf_set_lines(buf, 0, -1, false, buf_lines)
+    vim.bo[buf].modifiable = false
+
+    local win = api.nvim_open_win(buf, true, {
+        relative  = "editor",
+        width     = width,
+        height    = height,
+        row       = math.floor((vim.o.lines - height) / 2),
+        col       = math.floor((vim.o.columns - width) / 2),
+        style     = "minimal",
+        border    = "rounded",
+        title     = " Search results (" .. #rows .. " rows) ",
+        title_pos = "center",
+    })
+    vim.wo[win].wrap      = false
+    vim.wo[win].cursorline = true
+
+    -- Apply highlights
+    for _, m in ipairs(hl_marks) do
+        api.nvim_buf_set_extmark(buf, ns, m[1], m[2], {
+            end_col  = m[3],
+            hl_group = m[4],
+        })
+    end
+
+    -- q / <Esc> close the window
+    for _, key in ipairs({ "q", "<Esc>" }) do
+        vim.keymap.set("n", key, function()
+            pcall(api.nvim_win_close, win, true)
+        end, { buffer = buf, nowait = true })
+    end
+end
+
 ---@param bufnr integer
 M.show = function(bufnr)
     if not util.is_buf_valid(bufnr) or not util.is_win_valid(state.winnr) then
@@ -152,7 +245,7 @@ M.show = function(bufnr)
     table.insert(buf_lines, "")  -- bottom border
     table.insert(buf_lines, "")  -- spacer
     table.insert(buf_lines, string.format(
-        "  %d row%s  (press <CR> on a row to preview full values)",
+        "  %d row%s  (<CR> preview row · / search all)",
         #rows, #rows == 1 and "" or "s"))
     util.set_lines(bufnr, 0, -1, false, buf_lines)
 
@@ -238,6 +331,15 @@ M.show = function(bufnr)
         if row_idx < 1 or row_idx > #rows then return end
         open_preview(rows[row_idx], cols)
     end, { buffer = bufnr, nowait = true, desc = "Preview full row values" })
+
+    -- / and ? open the full-text search window (all rows, no truncation)
+    -- then immediately feed the key so the user lands in the search prompt
+    for _, key in ipairs({ "/", "?" }) do
+        vim.keymap.set("n", key, function()
+            open_search_window(rows, cols)
+            vim.api.nvim_feedkeys(key, "t", false)
+        end, { buffer = bufnr, nowait = true, desc = "Search all rows" })
+    end
 end
 
 return M
