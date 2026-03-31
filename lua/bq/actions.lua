@@ -214,8 +214,19 @@ M.run_query = function(sql)
     -- Switch to results view and show loading indicator
     state.current_section = "results"
     winbar.refresh_winbar("results")
-    api.nvim_buf_clear_namespace(state.bufs["results"], globals.NAMESPACE, 0, -1)
-    util.set_lines(state.bufs["results"], 0, -1, false, { "  Running query…" })
+    local results_buf = state.bufs["results"]
+    api.nvim_buf_clear_namespace(results_buf, globals.NAMESPACE, 0, -1)
+    util.set_lines(results_buf, 0, -1, false, { "  Running query…" })
+    -- Physically swap the window buffer so the results pane is visible immediately
+    -- (refresh_winbar only updates the tab label, not the displayed buffer)
+    if util.is_win_valid(state.winnr) then
+        local cur_buf = api.nvim_win_get_buf(state.winnr)
+        if cur_buf ~= results_buf then
+            vim.wo[state.winnr][0].winfixbuf = false
+            api.nvim_win_set_buf(state.winnr, results_buf)
+            vim.wo[state.winnr][0].winfixbuf = true
+        end
+    end
 
     local start_ts = vim.uv.now()
     local project = state.project
@@ -247,7 +258,7 @@ M.run_query = function(sql)
             -- Store error so results.show can re-render it on any tab switch
             state.query_error = { raw = raw or "", info = info, elapsed_ms = elapsed }
             api.nvim_buf_clear_namespace(state.bufs["results"], globals.NAMESPACE, 0, -1)
-            util.set_lines(state.bufs["results"], 0, -1, false, err_lines)
+            require("bq.views.results").show(state.bufs["results"])
             winbar.refresh_winbar("results")
             vim.notify("[bq] " .. info.detail, vim.log.levels.ERROR)
             return
