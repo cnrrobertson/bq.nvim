@@ -48,12 +48,17 @@ M.run_job = function(opts)
             local stderr = table.concat(stderr_lines, "\n")
             vim.schedule(function()
                 if code ~= 0 then
-                    log.append("EXIT " .. code .. " STDERR: " .. stderr)
+                    -- bq sometimes routes errors to stdout (JSON) rather than stderr
+                    log.append("EXIT " .. code
+                        .. " STDERR: " .. (stderr ~= "" and stderr or "(empty)")
+                        .. (stdout ~= "" and (" STDOUT: " .. stdout) or ""))
                 else
                     log.append("EXIT 0 (" .. #stdout .. " bytes)")
                 end
-                -- On error, pass stderr as the output for display
-                opts.on_exit(code, code == 0 and stdout or stderr)
+                -- On error, prefer stderr; fall back to stdout when stderr is empty
+                -- (bq --format=prettyjson writes JSON errors to stdout)
+                local err_out = stderr ~= "" and stderr or stdout
+                opts.on_exit(code, code == 0 and stdout or err_out)
             end)
         end,
     })

@@ -9,6 +9,73 @@ local M = {}
 local api = vim.api
 local MAX_COL_WIDTH = 50
 
+--- Render the error stored in state.query_error into the results buffer.
+--- Mirrors the label-aligned style of the stats view.
+---@param bufnr integer
+local function show_error(bufnr)
+    local e   = state.query_error
+    local ns  = globals.NAMESPACE
+    local lines = {}
+    local marks = {}  -- { line_idx, col_s, col_e, hl_group }
+
+    local function push(text, col_s, col_e, hl)
+        local idx = #lines
+        table.insert(lines, text)
+        if hl then table.insert(marks, { idx, col_s, col_e, hl }) end
+    end
+
+    local title = "  Query failed"
+    push(title, 0, #title, "BQHistoryErr")
+    push("")
+
+    local meta = {}
+    if e.info.job_ref then
+        table.insert(meta, { "Job",      e.info.job_ref })
+    end
+    if e.info.err_line and e.info.err_col then
+        table.insert(meta, { "Location", "line " .. e.info.err_line .. ", col " .. e.info.err_col })
+    end
+    table.insert(meta, { "Elapsed", string.format("%d ms", e.elapsed_ms) })
+
+    local key_w = 0
+    for _, m in ipairs(meta) do key_w = math.max(key_w, #m[1]) end
+    for _, m in ipairs(meta) do
+        local pad  = string.rep(" ", key_w - #m[1])
+        local line = "  " .. m[1] .. pad .. "  " .. m[2]
+        push(line, 2, 2 + #m[1], "BQStatKey")
+    end
+
+    if e.info.console_url then
+        push("")
+        push("  Console:", 2, 10, "BQStatKey")
+        local url_line = "    " .. e.info.console_url
+        push(url_line, 4, #url_line, "Underlined")
+    end
+
+    push("")
+    push("  Detail:", 2, 9, "BQStatKey")
+    for _, l in ipairs(vim.split(e.raw or "", "\n")) do
+        l = l:match("^%s*(.-)%s*$")
+        if l ~= "" then push("    " .. l) end
+    end
+
+    util.set_lines(bufnr, 0, -1, false, lines)
+    for _, m in ipairs(marks) do
+        api.nvim_buf_set_extmark(bufnr, ns, m[1], m[2], {
+            end_col  = m[3],
+            hl_group = m[4],
+        })
+    end
+
+    -- `o` opens the console URL in the browser (only when error has a job URL)
+    if e.info.console_url then
+        local url = e.info.console_url
+        vim.keymap.set("n", "o", function()
+            vim.ui.open(url)
+        end, { buffer = bufnr, nowait = true, desc = "Open job in BigQuery console" })
+    end
+end
+
 -- Resolve a dimension value: fractions < 1 are treated as a percentage of
 -- `total` (e.g. 0.8 → 80% of editor columns/lines), integers are used as-is.
 local function resolve_dim(val, total)
@@ -187,6 +254,16 @@ M.show = function(bufnr)
     if not util.is_buf_valid(bufnr) or not util.is_win_valid(state.winnr) then
         return
     end
+
+    -- Re-render query error (persists across tab switches)
+    if state.query_error then
+        vim.wo[state.winnr][0].cursorlineopt = "number"
+        show_error(bufnr)
+        return
+    end
+
+    -- Remove the error-only `o` keymap when showing normal results
+    pcall(vim.keymap.del, "n", "o", { buffer = bufnr })
 
     local rows = state.results_data
     local cols = state.results_schema

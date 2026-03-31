@@ -130,6 +130,72 @@ M.show_view = function(view)
     require("bq.views").switch_to_view(view)
 end
 
+--- Extract structured fields from bq CLI stderr on query failure.
+--- BQ stderr format: "BigQuery error in query operation: Error processing job
+--- 'project:LOCATION.job_name': <message> [at LINE:COL]"
+---@param raw string
+---@return { job_ref: string?, project: string?, location: string?, job_name: string?, err_line: string?, err_col: string?, detail: string, console_url: string? }
+local function parse_bq_error(raw)
+    local job_ref    = raw:match("Error processing job '([^']+)'")
+    local project, location, job_name
+    if job_ref then
+        project, location, job_name = job_ref:match("^([^:]+):([^%.]+)%.(.+)$")
+    end
+    local err_line, err_col = raw:match("at %[(%d+):(%d+)%]")
+
+    -- bq --format=prettyjson writes JSON to stdout on failure; parse it if present
+    -- Expected shape: { status: { errorResult: { message, reason }, jobReference: {...} } }
+    local detail
+    local ok, decoded = pcall(vim.fn.json_decode, raw)
+    if ok and type(decoded) == "table" then
+        local status = decoded.status
+        if type(status) == "table" then
+            local err_result = status.errorResult
+            if type(err_result) == "table" and err_result.message then
+                detail = err_result.message
+            end
+        end
+        -- Also try to get job reference from JSON when the plain-text form was absent
+        if not job_ref then
+            local job_ref_tbl = decoded.jobReference
+            if type(job_ref_tbl) == "table"
+                and job_ref_tbl.projectId and job_ref_tbl.location and job_ref_tbl.jobId
+            then
+                project  = job_ref_tbl.projectId
+                location = job_ref_tbl.location
+                job_name = job_ref_tbl.jobId
+                job_ref  = project .. ":" .. location .. "." .. job_name
+            end
+        end
+    end
+
+    -- Fallback: strip boilerplate from plain-text stderr
+    if not detail then
+        detail = raw:match("Error processing job '[^']+':%s*(.+)$") or raw
+        detail = (detail:match("^([^\n]+)") or detail):match("^%s*(.-)%s*$")
+    end
+    if detail == "" then detail = "unknown error (check debug log)" end
+
+    local console_url
+    if project and location and job_name then
+        console_url = ("https://console.cloud.google.com/bigquery"
+            .. "?project=" .. project
+            .. "&j=bq:" .. location .. ":" .. job_name
+            .. "&page=queryresults")
+    end
+    return {
+        job_ref     = job_ref,
+        project     = project,
+        location    = location,
+        job_name    = job_name,
+        err_line    = err_line,
+        err_col     = err_col,
+        detail      = detail,
+        console_url = console_url,
+    }
+end
+
+
 ---@param sql string
 M.run_query = function(sql)
     if not sql or sql:match("^%s*$") then
@@ -138,6 +204,7 @@ M.run_query = function(sql)
     end
 
     state.last_query = sql
+    state.query_error = nil  -- clear any previous error
 
     -- Open panel if not already open
     if not util.is_win_valid(state.winnr) then
@@ -171,17 +238,18 @@ M.run_query = function(sql)
             history_entry.status = "error"
             state.results_data = {}
             state.results_schema = {}
+            local info = parse_bq_error(raw or "")
             state.stats_data = {
-                status = "ERROR",
+                status     = "ERROR",
                 elapsed_ms = elapsed,
+                job_id     = info.job_ref,
             }
-            local err_lines = { "  Query failed:", "" }
-            for _, line in ipairs(vim.split(raw or "", "\n")) do
-                table.insert(err_lines, "  " .. line)
-            end
+            -- Store error so results.show can re-render it on any tab switch
+            state.query_error = { raw = raw or "", info = info, elapsed_ms = elapsed }
             api.nvim_buf_clear_namespace(state.bufs["results"], globals.NAMESPACE, 0, -1)
             util.set_lines(state.bufs["results"], 0, -1, false, err_lines)
             winbar.refresh_winbar("results")
+            vim.notify("[bq] " .. info.detail, vim.log.levels.ERROR)
             return
         end
 
