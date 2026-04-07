@@ -82,6 +82,23 @@ local function resolve_dim(val, total)
     return val < 1 and math.floor(val * total) or val
 end
 
+-- Return the 1-based column index under the cursor in the results buffer.
+-- Each data line contains exactly one real character per column, so the
+-- character position of the cursor maps directly to a column index.
+-- Returns nil when the cursor is not on a data row or a valid column.
+local function get_col_idx(bufnr, winnr, num_cols, ROW_OFFSET)
+    local cursor = api.nvim_win_get_cursor(winnr)
+    local row_idx = cursor[1] - ROW_OFFSET
+    if row_idx < 1 then return nil, nil end
+    local line = api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1] or ""
+    -- charidx returns the 0-based character index at the given byte offset,
+    -- correctly handling multi-byte characters.
+    local char_idx = vim.fn.charidx(line, cursor[2])
+    local col_idx = char_idx + 1
+    if col_idx < 1 or col_idx > num_cols then return nil, nil end
+    return row_idx, col_idx
+end
+
 local function open_preview(row, cols)
     local lines = {}
     local max_key_len = 0
@@ -156,14 +173,131 @@ local function open_preview(row, cols)
     end
 end
 
--- Opens a floating window with all rows rendered as full plain text (no
--- truncation) so that native / and ? search work across the entire result set.
-local function open_search_window(rows, cols)
+-- Opens a floating window showing the full untruncated value of a single cell.
+local function open_cell_preview(col_name, value)
+    local raw = (value == nil or value == vim.NIL) and "NULL" or tostring(value)
+    local val_lines = vim.split(raw:gsub("\r", ""), "\n", { plain = true })
+
+    local cfg = setup.config.preview
+    local max_w = resolve_dim(cfg.max_width, vim.o.columns)
+    local max_h = resolve_dim(cfg.max_height, vim.o.lines)
+    local width  = math.max(40, math.min(max_w, vim.o.columns - 6))
+    local height = math.max(3,  math.min(#val_lines, max_h, vim.o.lines - 6))
+
+    local buf = api.nvim_create_buf(false, true)
+    api.nvim_buf_set_lines(buf, 0, -1, false, val_lines)
+    vim.bo[buf].modifiable = false
+
+    local win = api.nvim_open_win(buf, true, {
+        relative  = "editor",
+        width     = width,
+        height    = height,
+        row       = math.floor((vim.o.lines - height) / 2),
+        col       = math.floor((vim.o.columns - width) / 2),
+        style     = "minimal",
+        border    = "rounded",
+        title     = " Cell: " .. col_name .. " ",
+        title_pos = "center",
+    })
+    vim.wo[win].wrap       = true
+    vim.wo[win].cursorline = true
+
+    local is_null = value == nil or value == vim.NIL
+    if is_null then
+        api.nvim_buf_set_extmark(buf, globals.NAMESPACE, 0, 0, {
+            end_col  = #val_lines[1],
+            hl_group = "BQNullValue",
+        })
+    end
+
+    for _, key in ipairs({ "q", "<Esc>" }) do
+        vim.keymap.set("n", key, function()
+            pcall(api.nvim_win_close, win, true)
+        end, { buffer = buf, nowait = true })
+    end
+end
+
+-- Opens a floating window with all values for a single column across every row.
+local function open_column_preview(rows, col_name)
     if #rows == 0 then return end
 
     local ns = globals.NAMESPACE
+    -- Width of the row-number gutter
+    local gutter = #tostring(#rows) + 2  -- "N  "
+    local buf_lines = {}
+    local hl_marks  = {}  -- { line_idx, col_s, col_e, hl_group }
+
+    for i, row in ipairs(rows) do
+        local raw     = row[col_name]
+        local is_null = raw == nil or raw == vim.NIL
+        local val_str = is_null and "NULL" or tostring(raw):gsub("\r", "")
+        local val_lines = vim.split(val_str, "\n", { plain = true })
+
+        local num_str = tostring(i)
+        local pad     = string.rep(" ", gutter - #num_str - 1)
+        local indent  = string.rep(" ", gutter)
+
+        -- First line: "N  value"
+        local first_line = num_str .. pad .. " " .. val_lines[1]
+        if is_null then
+            table.insert(hl_marks, { #buf_lines, gutter, gutter + #val_lines[1], "BQNullValue" })
+        end
+        table.insert(buf_lines, first_line)
+
+        -- Continuation lines for multi-line values
+        for li = 2, #val_lines do
+            table.insert(buf_lines, indent .. val_lines[li])
+        end
+    end
+
+    local cfg    = setup.config.preview
+    local max_w  = resolve_dim(cfg.max_width, vim.o.columns)
+    local max_h  = resolve_dim(cfg.max_height, vim.o.lines)
+    local width  = math.max(40, math.min(max_w, vim.o.columns - 4))
+    local height = math.max(5,  math.min(#buf_lines, max_h, vim.o.lines - 4))
+
+    local buf = api.nvim_create_buf(false, true)
+    api.nvim_buf_set_lines(buf, 0, -1, false, buf_lines)
+    vim.bo[buf].modifiable = false
+
+    local win = api.nvim_open_win(buf, true, {
+        relative  = "editor",
+        width     = width,
+        height    = height,
+        row       = math.floor((vim.o.lines - height) / 2),
+        col       = math.floor((vim.o.columns - width) / 2),
+        style     = "minimal",
+        border    = "rounded",
+        title     = " Column: " .. col_name .. " (" .. #rows .. " rows) ",
+        title_pos = "center",
+    })
+    vim.wo[win].wrap       = false
+    vim.wo[win].cursorline = true
+
+    for _, m in ipairs(hl_marks) do
+        api.nvim_buf_set_extmark(buf, ns, m[1], m[2], {
+            end_col  = m[3],
+            hl_group = m[4],
+        })
+    end
+
+    for _, key in ipairs({ "q", "<Esc>" }) do
+        vim.keymap.set("n", key, function()
+            pcall(api.nvim_win_close, win, true)
+        end, { buffer = buf, nowait = true })
+    end
+end
+
+-- Opens a floating window with all rows rendered as full plain text (no
+-- truncation) so that native / and ? search work across the entire result set.
+-- `display_cols` is an optional subset of cols to show; defaults to all cols.
+local function open_search_window(rows, cols, display_cols)
+    if #rows == 0 then return end
+    display_cols = display_cols or cols
+
+    local ns = globals.NAMESPACE
     local max_key_len = 0
-    for _, col in ipairs(cols) do
+    for _, col in ipairs(display_cols) do
         if #col > max_key_len then max_key_len = #col end
     end
 
@@ -180,7 +314,7 @@ local function open_search_window(rows, cols)
         table.insert(buf_lines, divider_line)
 
         -- One line per field; multi-line values span additional indented lines
-        for _, col in ipairs(cols) do
+        for _, col in ipairs(display_cols) do
             local raw = row[col]
             local is_null = raw == nil or raw == vim.NIL
             local val_str = is_null and "NULL" or tostring(raw):gsub("\r", "")
@@ -227,7 +361,9 @@ local function open_search_window(rows, cols)
         col       = math.floor((vim.o.columns - width) / 2),
         style     = "minimal",
         border    = "rounded",
-        title     = " Search results (" .. #rows .. " rows) ",
+        title     = (#display_cols < #cols)
+            and " Search results (" .. #rows .. " rows · cols: " .. table.concat(display_cols, ", ") .. ") "
+            or  " Search results (" .. #rows .. " rows) ",
         title_pos = "center",
     })
     vim.wo[win].wrap      = false
@@ -303,7 +439,8 @@ M.show = function(bufnr)
     --   line 2+N      spacer
     local ROW_OFFSET = 2
 
-    local hint_str = string.format("  %d row%s  (<CR> preview row · / search all)",
+    local hint_str = string.format(
+        "  %d row%s  (<CR> row · c cell · C col · V<CR> rows · ^V<CR> cols · / search)",
         #rows, #rows == 1 and "" or "s")
 
     -- Build header cells (same first-char pattern as data rows)
@@ -452,6 +589,59 @@ M.show = function(bufnr)
         if row_idx < 1 or row_idx > #rows then return end
         open_preview(rows[row_idx], cols)
     end, { buffer = bufnr, nowait = true, desc = "Preview full row values" })
+
+    -- c: preview the single cell under cursor (full untruncated value)
+    vim.keymap.set("n", "c", function()
+        if not util.is_win_valid(state.winnr) then return end
+        local row_idx, col_idx = get_col_idx(bufnr, state.winnr, #cols, ROW_OFFSET)
+        if not row_idx or row_idx > #rows then return end
+        local col_name = cols[col_idx]
+        open_cell_preview(col_name, rows[row_idx][col_name])
+    end, { buffer = bufnr, nowait = true, desc = "Preview cell value" })
+
+    -- C: preview all values in the column under cursor
+    vim.keymap.set("n", "C", function()
+        if not util.is_win_valid(state.winnr) then return end
+        local _, col_idx = get_col_idx(bufnr, state.winnr, #cols, ROW_OFFSET)
+        if not col_idx then return end
+        open_column_preview(rows, cols[col_idx])
+    end, { buffer = bufnr, nowait = true, desc = "Preview column values" })
+
+    -- Visual <CR>: dispatches on visual mode type
+    --   V (line)   → preview the selected rows
+    --   <C-v> (block) → preview the selected columns across all rows
+    vim.keymap.set("x", "<CR>", function()
+        local mode = vim.fn.mode()
+        local esc  = api.nvim_replace_termcodes("<Esc>", true, false, true)
+
+        if mode == "V" then
+            -- Visual-line: collect selected rows
+            local s = math.min(vim.fn.line("v"), vim.fn.line("."))
+            local e = math.max(vim.fn.line("v"), vim.fn.line("."))
+            local sel = {}
+            for ln = s, e do
+                local ri = ln - ROW_OFFSET
+                if ri >= 1 and ri <= #rows then
+                    table.insert(sel, rows[ri])
+                end
+            end
+            api.nvim_feedkeys(esc, "n", false)
+            if #sel > 0 then open_search_window(sel, cols) end
+
+        elseif mode == "\22" then
+            -- Visual-block: map selected byte columns → column indices via header
+            local start_col = math.min(vim.fn.col("v"), vim.fn.col(".")) - 1  -- 0-based byte
+            local end_col   = math.max(vim.fn.col("v"), vim.fn.col(".")) - 1
+            local hdr = api.nvim_buf_get_lines(bufnr, 1, 2, false)[1] or ""
+            local c1  = math.max(1, math.min(vim.fn.charidx(hdr, start_col) + 1, #cols))
+            local c2  = math.max(1, math.min(vim.fn.charidx(hdr, end_col)   + 1, #cols))
+            if c1 > c2 then c1, c2 = c2, c1 end
+            local sel_cols = {}
+            for ci = c1, c2 do table.insert(sel_cols, cols[ci]) end
+            api.nvim_feedkeys(esc, "n", false)
+            if #sel_cols > 0 then open_search_window(rows, cols, sel_cols) end
+        end
+    end, { buffer = bufnr, nowait = true, desc = "Preview selected rows/columns" })
 
     -- / and ? open the full-text search window (all rows, no truncation)
     -- then immediately feed the key so the user lands in the search prompt
