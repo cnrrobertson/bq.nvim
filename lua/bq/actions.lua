@@ -249,6 +249,7 @@ M.run_query = function(sql)
             history_entry.status = "error"
             state.results_data = {}
             state.results_schema = {}
+            require("bq.views.results").clear_filter()
             local info = parse_bq_error(raw or "")
             state.stats_data = {
                 status     = "ERROR",
@@ -268,6 +269,7 @@ M.run_query = function(sql)
 
         local rows = data or {}
         state.results_data = rows
+        require("bq.views.results").clear_filter()
         state.stats_data = {
             status = "OK",
             total_rows = #rows,

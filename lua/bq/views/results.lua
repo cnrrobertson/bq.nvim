@@ -9,6 +9,11 @@ local M = {}
 local api = vim.api
 local MAX_COL_WIDTH = 50
 
+-- Filter stack: each entry is a filter expression string.
+-- Filters are applied in sequence (AND between them).
+-- |  within a single filter provides OR between conditions.
+local active_filters = {}
+
 --- Render the error stored in state.query_error into the results buffer.
 --- Mirrors the label-aligned style of the stats view.
 ---@param bufnr integer
@@ -385,6 +390,59 @@ local function open_search_window(rows, cols, display_cols)
     end
 end
 
+-- Parse one filter expression into a list of OR conditions.
+-- Supports: bare pattern, col=pat, col!=pat, and | to separate OR terms.
+-- Returns { conditions = [{col, op, pat}, ...] }
+local function parse_filter(input)
+    local parts = input:find("|", 1, true)
+        and vim.split(input, "|", { plain = true })
+        or  { input }
+    local conditions = {}
+    for _, part in ipairs(parts) do
+        part = vim.trim(part)
+        if part ~= "" then
+            -- Lua patterns don't support | alternation, so try != then = separately
+            local col, pat = part:match("^([%w_]+)%s*!=%s*(.+)$")
+            local op = "!="
+            if not col then
+                col, pat = part:match("^([%w_]+)%s*=%s*(.+)$")
+                op = "="
+            end
+            if col then
+                -- Strip surrounding quotes from the pattern value
+                pat = pat:match("^'(.*)'$") or pat:match('^"(.*)"$') or pat
+                table.insert(conditions, { col = col, op = op, pat = vim.trim(pat) })
+            else
+                table.insert(conditions, { col = nil, op = "=", pat = part })
+            end
+        end
+    end
+    return { conditions = conditions }
+end
+
+-- Return true if `row` matches the parsed filter (OR across conditions).
+local function row_matches(row, cols, filter)
+    local function cell_matches(v, pat)
+        local s = (v == nil or v == vim.NIL) and "NULL" or tostring(v)
+        local ok, m = pcall(string.find, s:lower(), pat:lower())
+        return ok and m ~= nil
+    end
+    local function cond_matches(cond)
+        if cond.col then
+            local m = cell_matches(row[cond.col], cond.pat)
+            if cond.op == "=" then return m else return not m end
+        end
+        for _, col in ipairs(cols) do
+            if cell_matches(row[col], cond.pat) then return true end
+        end
+        return false
+    end
+    for _, cond in ipairs(filter.conditions) do
+        if cond_matches(cond) then return true end
+    end
+    return false
+end
+
 ---@param bufnr integer
 M.show = function(bufnr)
     if not util.is_buf_valid(bufnr) or not util.is_win_valid(state.winnr) then
@@ -401,8 +459,24 @@ M.show = function(bufnr)
     -- Remove the error-only `o` keymap when showing normal results
     pcall(vim.keymap.del, "n", "o", { buffer = bufnr })
 
-    local rows = state.results_data
+    -- Clear all extmarks before re-rendering to prevent accumulation when
+    -- M.show is called directly (e.g. from filter keymaps) rather than via
+    -- switch_to_view (which already clears before calling show).
+    api.nvim_buf_clear_namespace(bufnr, globals.NAMESPACE, 0, -1)
+
+    local all_rows = state.results_data
     local cols = state.results_schema
+
+    -- Apply each stacked filter in sequence (AND between filters, OR within each)
+    local rows = all_rows
+    for _, filter_str in ipairs(active_filters) do
+        local filtered = {}
+        local f = parse_filter(filter_str)
+        for _, row in ipairs(rows) do
+            if row_matches(row, cols, f) then table.insert(filtered, row) end
+        end
+        rows = filtered
+    end
 
     if views.cleanup_view(bufnr, #rows == 0 and #cols == 0, "  No results") then
         return
@@ -439,9 +513,25 @@ M.show = function(bufnr)
     --   line 2+N      spacer
     local ROW_OFFSET = 2
 
-    local hint_str = string.format(
-        "  %d row%s  (<CR> row · c cell · C col · V<CR> rows · ^V<CR> cols · / search)",
-        #rows, #rows == 1 and "" or "s")
+    local hint_str
+    local base_keys = "<CR> row · c cell · C col · f filter · / search"
+    if #active_filters == 0 then
+        hint_str = string.format(
+            "  %d row%s  (%s)",
+            #rows, #rows == 1 and "" or "s", base_keys)
+    else
+        local tags
+        if #active_filters <= 2 then
+            local t = {}
+            for _, fs in ipairs(active_filters) do table.insert(t, "[" .. fs .. "]") end
+            tags = table.concat(t, "")
+        else
+            tags = "[" .. #active_filters .. " filters]"
+        end
+        hint_str = string.format(
+            "  %d/%d rows  %s  (<BS> undo · F clear · %s)",
+            #rows, #all_rows, tags, base_keys)
+    end
 
     -- Build header cells (same first-char pattern as data rows)
     local hdr_real_chars = {}
@@ -607,6 +697,31 @@ M.show = function(bufnr)
         open_column_preview(rows, cols[col_idx])
     end, { buffer = bufnr, nowait = true, desc = "Preview column values" })
 
+    -- f: push a new filter onto the stack; re-renders with narrowed rows
+    vim.keymap.set("n", "f", function()
+        vim.ui.input({
+            prompt = "Add filter (e.g. foo · status=ok · name!=NULL · a|b): ",
+        }, function(input)
+            if input == nil or input == "" then return end
+            table.insert(active_filters, input)
+            M.show(bufnr)
+        end)
+    end, { buffer = bufnr, nowait = true, desc = "Add filter" })
+
+    -- F: clear all filters and re-render
+    vim.keymap.set("n", "F", function()
+        active_filters = {}
+        M.show(bufnr)
+    end, { buffer = bufnr, nowait = true, desc = "Clear all filters" })
+
+    -- <BS>: pop the last filter off the stack and re-render
+    vim.keymap.set("n", "<BS>", function()
+        if #active_filters > 0 then
+            table.remove(active_filters)
+            M.show(bufnr)
+        end
+    end, { buffer = bufnr, nowait = true, desc = "Remove last filter" })
+
     -- Visual <CR>: dispatches on visual mode type
     --   V (line)   → preview the selected rows
     --   <C-v> (block) → preview the selected columns across all rows
@@ -651,6 +766,11 @@ M.show = function(bufnr)
             vim.api.nvim_feedkeys(key, "t", false)
         end, { buffer = bufnr, nowait = true, desc = "Search all rows" })
     end
+end
+
+-- Called by actions.lua when new query results arrive to reset the filter stack.
+M.clear_filter = function()
+    active_filters = {}
 end
 
 return M
