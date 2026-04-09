@@ -850,4 +850,16 @@ M.clear_filter = function()
     active_filters = {}
 end
 
+-- Allow external callers (including tests) to push a filter programmatically.
+M.push_filter = function(str)
+    table.insert(active_filters, str)
+end
+
+-- Test-only access to private helpers (not part of the public API).
+M._test = {
+    parse_filter = parse_filter,
+    row_matches  = row_matches,
+    write_csv    = write_csv,
+}
+
 return M

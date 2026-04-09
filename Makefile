@@ -11,3 +11,14 @@ docs: ##  -- Compile documentation from source files
         'lua/bq/config.lua' \
         })" \
         -c "quit"
+
+## ----------------------------------------------
+##    Tests
+##    -----
+test: ##  -- Run all tests
+	nvim --headless --noplugin -u ./scripts/minimal_init.lua \
+        -c "lua MiniTest.run()" -c "quit"
+
+test_file: ##  -- Run a single test file  (FILE=tests/test_foo.lua)
+	nvim --headless --noplugin -u ./scripts/minimal_init.lua \
+        -c "lua MiniTest.run_file('$(FILE)')" -c "quit"
