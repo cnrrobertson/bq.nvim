@@ -23,10 +23,15 @@
 ---@field max_width number Maximum width of the preview float. Fractions < 1 are a percentage of editor width (e.g. 0.8 = 80%); integers are absolute columns.
 ---@field max_height number Maximum height of the preview float. Fractions < 1 are a percentage of editor height (e.g. 0.6 = 60%); integers are absolute lines.
 
+---@class bq.ExportConfig
+---@field dir string Default directory for CSV exports. `~` is expanded to the home directory.
+---@field name string Filename template; supports `os.date` format codes (e.g. `%Y%m%d-%H%M%S`). Use a fixed name like `"bq-export.csv"` to always overwrite.
+
 ---@class bq.Config
 ---@field winbar bq.WinbarConfig Winbar / tab-strip configuration
 ---@field windows bq.WindowsConfig Panel window configuration
 ---@field preview bq.PreviewConfig Row preview window configuration
+---@field export bq.ExportConfig CSV export configuration
 ---@field bq_path string Path or name of the `bq` CLI executable
 ---@field max_results integer Maximum rows fetched per query
 
@@ -55,6 +60,10 @@ local M = {
     preview = {
         max_width  = 0.8,
         max_height = 0.6,
+    },
+    export = {
+        dir  = "~/Downloads",
+        name = "bq-export-%Y%m%d-%H%M%S.csv",
     },
     bq_path = "bq",
     max_results = 1000,

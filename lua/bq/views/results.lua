@@ -14,6 +14,9 @@ local MAX_COL_WIDTH = 50
 -- |  within a single filter provides OR between conditions.
 local active_filters = {}
 
+-- Path of the last successfully exported CSV file (nil until first export).
+local last_export_path = nil
+
 --- Render the error stored in state.query_error into the results buffer.
 --- Mirrors the label-aligned style of the stats view.
 ---@param bufnr integer
@@ -390,6 +393,40 @@ local function open_search_window(rows, cols, display_cols)
     end
 end
 
+-- Write `rows` as a CSV file to `path`.
+-- Values are RFC-4180 escaped: wrapped in quotes when they contain a comma,
+-- double-quote, or newline; embedded double-quotes are doubled.
+-- NULL / nil values are written as empty fields.
+-- Returns true on success, or nil + error string on failure.
+local function write_csv(rows, cols, path)
+    local f, err = io.open(path, "w")
+    if not f then return nil, err end
+
+    local function escape(v)
+        if v == nil or v == vim.NIL then return "" end
+        local s = tostring(v)
+        if s:find('[,"\n\r]') then
+            return '"' .. s:gsub('"', '""') .. '"'
+        end
+        return s
+    end
+
+    -- Header row
+    local header = {}
+    for _, col in ipairs(cols) do table.insert(header, escape(col)) end
+    f:write(table.concat(header, ",") .. "\n")
+
+    -- Data rows
+    for _, row in ipairs(rows) do
+        local fields = {}
+        for _, col in ipairs(cols) do table.insert(fields, escape(row[col])) end
+        f:write(table.concat(fields, ",") .. "\n")
+    end
+
+    f:close()
+    return true
+end
+
 -- Parse one filter expression into a list of OR conditions.
 -- Supports: bare pattern, col=pat, col!=pat, and | to separate OR terms.
 -- Returns { conditions = [{col, op, pat}, ...] }
@@ -514,7 +551,7 @@ M.show = function(bufnr)
     local ROW_OFFSET = 2
 
     local hint_str
-    local base_keys = "<CR> row · c cell · C col · f filter · / search"
+    local base_keys = "<CR> row · c cell · C col · f filter · e export · o open · / search"
     if #active_filters == 0 then
         hint_str = string.format(
             "  %d row%s  (%s)",
@@ -713,6 +750,46 @@ M.show = function(bufnr)
         active_filters = {}
         M.show(bufnr)
     end, { buffer = bufnr, nowait = true, desc = "Clear all filters" })
+
+    -- e: export currently displayed rows (respects active filters) to CSV
+    vim.keymap.set("n", "e", function()
+        local cfg_export = setup.config.export
+        local fname   = os.date(cfg_export.name)
+        local default = vim.fn.expand(cfg_export.dir) .. "/" .. fname
+        vim.ui.input({ prompt = "Export CSV to: ", default = default }, function(path)
+            if path == nil or path == "" then return end
+            local ok, err = write_csv(rows, cols, path)
+            if ok then
+                last_export_path = path
+                vim.notify(string.format("[bq] Exported %d row%s to %s",
+                    #rows, #rows == 1 and "" or "s", path), vim.log.levels.INFO)
+                M.show(bufnr)
+            else
+                vim.notify("[bq] Export failed: " .. (err or "unknown error"), vim.log.levels.ERROR)
+            end
+        end)
+    end, { buffer = bufnr, nowait = true, desc = "Export results to CSV" })
+
+    -- o: open the last exported CSV (auto-exports to /tmp/ if none yet)
+    vim.keymap.set("n", "o", function()
+        local function do_open(path)
+            last_export_path = path
+            vim.ui.open(path)
+        end
+        if last_export_path then
+            do_open(last_export_path)
+        else
+            local fname = os.date("bq-export-%Y%m%d-%H%M%S.csv")
+            local path  = "/tmp/" .. fname
+            local ok, err = write_csv(rows, cols, path)
+            if ok then
+                vim.notify("[bq] Quick-exported to " .. path, vim.log.levels.INFO)
+                do_open(path)
+            else
+                vim.notify("[bq] Export failed: " .. (err or "unknown error"), vim.log.levels.ERROR)
+            end
+        end
+    end, { buffer = bufnr, nowait = true, desc = "Open last exported CSV" })
 
     -- <BS>: pop the last filter off the stack and re-render
     vim.keymap.set("n", "<BS>", function()
