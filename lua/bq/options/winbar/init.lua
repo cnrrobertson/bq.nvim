@@ -77,6 +77,9 @@ M.set_winbar_opt = function()
         end
     end
 
+    -- Right-align a subtle "g? help" hint
+    table.insert(parts, "%=")
+    table.insert(parts, statusline.hl(" g? help ", "Hint"))
     table.insert(parts, statusline.hl("", "TabFill", false))
 
     vim.wo[state.winnr][0].winbar = table.concat(parts, "")
