@@ -3,6 +3,7 @@ local setup = require("bq.setup")
 local util = require("bq.util")
 local globals = require("bq.globals")
 local winbar = require("bq.options.winbar")
+local persist = require("bq.persist")
 
 local M = {}
 
@@ -308,6 +309,11 @@ M.run_query = function(sql)
         else
             state.results_schema = {}
         end
+
+        -- Persist results and history to disk for cross-session recall
+        local results_id = persist.save_results(rows)
+        if results_id then history_entry.results_id = results_id end
+        persist.save_history()
 
         require("bq.views").switch_to_view(state.current_section or "results")
     end)
