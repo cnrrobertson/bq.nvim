@@ -519,10 +519,11 @@ M.show = function(bufnr)
         return
     end
 
-    -- Compute column display widths (capped at MAX_COL_WIDTH)
+    -- Compute column display widths (capped at MAX_COL_WIDTH).
+    -- tostring() guards against numeric keys (e.g. from `SELECT 1, 2` queries).
     local widths = {}
     for _, col in ipairs(cols) do
-        widths[col] = #col
+        widths[col] = #tostring(col)
     end
     for _, row in ipairs(rows) do
         for _, col in ipairs(cols) do
@@ -534,9 +535,18 @@ M.show = function(bufnr)
         end
     end
 
+    -- Sentinel trailing column: one real space char so the last real column's
+    -- virtual text (rest of value + closing │) is not clipped at the window edge.
+    -- The cursor can land here; get_col_idx guards col_idx > #cols so it returns nil.
+    local SPACER = "\1"
+    widths[SPACER] = 1
+    local render_cols = {}
+    for _, c in ipairs(cols) do table.insert(render_cols, c) end
+    table.insert(render_cols, SPACER)
+
     -- Sep parts for border lines
     local sep_parts = {}
-    for _, col in ipairs(cols) do
+    for _, col in ipairs(render_cols) do
         table.insert(sep_parts, string.rep("─", widths[col] + 2))
     end
 
@@ -570,14 +580,20 @@ M.show = function(bufnr)
             #rows, #all_rows, tags, base_keys)
     end
 
-    -- Build header cells (same first-char pattern as data rows)
+    -- Build header cells (same first-char pattern as data rows).
+    -- Iterate render_cols so the sentinel spacer is included.
     local hdr_real_chars = {}
     local hdr_cells      = {}
-    for _, col in ipairs(cols) do
-        local w          = widths[col]
-        local first_char = #col > 0 and vim.fn.strcharpart(col, 0, 1) or " "
-        local rest       = vim.fn.strcharpart(col, 1)
-        local trail      = string.rep(" ", w - #col + 1)
+    for _, col in ipairs(render_cols) do
+        local w, first_char, rest, trail
+        if col == SPACER then
+            w = 1; first_char = " "; rest = ""; trail = ""
+        else
+            w          = widths[col]
+            first_char = #col > 0 and vim.fn.strcharpart(col, 0, 1) or " "
+            rest       = vim.fn.strcharpart(col, 1)
+            trail      = string.rep(" ", w - #col + 1)
+        end
         table.insert(hdr_real_chars, first_char)
         table.insert(hdr_cells, { first_char = first_char, rest = rest, trail = trail })
     end
@@ -588,15 +604,20 @@ M.show = function(bufnr)
     for _, row in ipairs(rows) do
         local real_chars = {}
         local cells = {}
-        for _, col in ipairs(cols) do
-            local w = widths[col]
-            local raw = row[col]
-            local is_null = raw == nil or raw == vim.NIL
-            local val = is_null and "NULL" or tostring(raw):gsub("[\n\r]", " ")
-            if #val > w then val = val:sub(1, w - 1) .. "…" end
-            local first_char = #val > 0 and vim.fn.strcharpart(val, 0, 1) or " "
-            local rest = vim.fn.strcharpart(val, 1)
-            local trail = string.rep(" ", w - #val + 1)
+        for _, col in ipairs(render_cols) do
+            local first_char, rest, trail, is_null
+            if col == SPACER then
+                first_char = " "; rest = ""; trail = ""; is_null = false
+            else
+                local w   = widths[col]
+                local raw = row[col]
+                is_null   = raw == nil or raw == vim.NIL
+                local val = is_null and "NULL" or tostring(raw):gsub("[\n\r]", " ")
+                if #val > w then val = val:sub(1, w - 1) .. "…" end
+                first_char = #val > 0 and vim.fn.strcharpart(val, 0, 1) or " "
+                rest       = vim.fn.strcharpart(val, 1)
+                trail      = string.rep(" ", w - #val + 1)
+            end
             table.insert(real_chars, first_char)
             table.insert(cells, { first_char = first_char, rest = rest, trail = trail, is_null = is_null })
         end
@@ -651,15 +672,19 @@ M.show = function(bufnr)
         if #cell.rest > 0 then
             table.insert(vt, { cell.rest, "BQHeader" })
         end
-        table.insert(vt, { cell.trail, "" })
+        if #cell.trail > 0 then
+            table.insert(vt, { cell.trail, "" })
+        end
         table.insert(vt, { "│", "BQBorderChar" })
         if k < #hdr_cells then
             table.insert(vt, { " ", "" })
         end
-        api.nvim_buf_set_extmark(bufnr, ns, 1, after, {
-            virt_text     = vt,
-            virt_text_pos = "inline",
-        })
+        if #vt > 0 then
+            api.nvim_buf_set_extmark(bufnr, ns, 1, after, {
+                virt_text     = vt,
+                virt_text_pos = "inline",
+            })
+        end
         hbyte_off = after
     end
 
@@ -686,7 +711,9 @@ M.show = function(bufnr)
             if #cell.rest > 0 then
                 table.insert(vt, { cell.rest, cell.is_null and "BQNullValue" or "" })
             end
-            table.insert(vt, { cell.trail, "" })
+            if #cell.trail > 0 then
+                table.insert(vt, { cell.trail, "" })
+            end
             table.insert(vt, { "│", "BQBorderChar" })
             if k < n then
                 table.insert(vt, { " ", "" })
