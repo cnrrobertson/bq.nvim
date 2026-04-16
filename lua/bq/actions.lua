@@ -19,22 +19,30 @@ end
 
 M.close = function()
     local winnr = state.winnr
-    state.winnr = nil  -- clear first so WinClosed callback is a no-op
+    state.winnr = nil  -- clear current tab's entry first so WinClosed callback is a no-op
 
     if util.is_win_valid(winnr) then
         pcall(api.nvim_win_close, winnr, true)
     end
 
-    for _, bufnr in pairs(state.bufs) do
-        if util.is_buf_valid(bufnr) then
-            pcall(api.nvim_buf_delete, bufnr, { force = true })
+    -- Only delete shared buffers when every tab's panel is closed
+    if vim.tbl_isempty(state.tab_wins) then
+        for _, bufnr in pairs(state.bufs) do
+            if util.is_buf_valid(bufnr) then
+                pcall(api.nvim_buf_delete, bufnr, { force = true })
+            end
         end
+        state.bufs = {}
     end
-    state.bufs = {}
 end
 
 M.open = function()
-    M.close()
+    -- Close only the current tab's existing window (not other tabs' windows)
+    if util.is_win_valid(state.winnr) then
+        local existing = state.winnr
+        state.winnr = nil  -- clear before closing so WinClosed is a no-op
+        pcall(api.nvim_win_close, existing, true)
+    end
 
     local cfg = setup.config.windows
     local pos = cfg.position
@@ -44,20 +52,23 @@ M.open = function()
         and math.floor((is_vertical and go.lines or go.columns) * size_)
         or math.floor(size_)
 
-    -- Create one buffer per section
+    -- Create section buffers only if they don't exist / are no longer valid.
+    -- Reusing them keeps content intact for tabs that already have the panel open.
     local sections = setup.config.winbar.sections
     for _, section in ipairs(sections) do
-        local bufnr = api.nvim_create_buf(false, false)
-        assert(bufnr ~= 0, "[bq] Failed to create buffer for " .. section)
-        local name = globals.buf_name(section)
-        for _, buf in ipairs(api.nvim_list_bufs()) do
-            if buf ~= bufnr and api.nvim_buf_get_name(buf) == name then
-                pcall(api.nvim_buf_delete, buf, { force = true })
+        if not util.is_buf_valid(state.bufs[section]) then
+            local bufnr = api.nvim_create_buf(false, false)
+            assert(bufnr ~= 0, "[bq] Failed to create buffer for " .. section)
+            local name = globals.buf_name(section)
+            for _, buf in ipairs(api.nvim_list_bufs()) do
+                if buf ~= bufnr and api.nvim_buf_get_name(buf) == name then
+                    pcall(api.nvim_buf_delete, buf, { force = true })
+                end
             end
+            api.nvim_buf_set_name(bufnr, name)
+            require("bq.views.options").set_buf_options(bufnr)
+            state.bufs[section] = bufnr
         end
-        api.nvim_buf_set_name(bufnr, name)
-        require("bq.views.options").set_buf_options(bufnr)
-        state.bufs[section] = bufnr
     end
 
     local initial_section = state.current_section or setup.config.winbar.default_section
@@ -82,13 +93,21 @@ M.open = function()
     winbar.set_action_keymaps()
     winbar.show_content(state.current_section)
 
+    -- Capture the tabpage now; can't rely on current_tabpage inside the callback
+    -- because focus may have moved by the time WinClosed fires.
+    local tabid = vim.api.nvim_get_current_tabpage()
+
     -- Clean up when window is closed directly by the user
     api.nvim_create_autocmd("WinClosed", {
         pattern = tostring(winnr),
         once = true,
         callback = function()
-            if state.winnr then  -- not already handled by M.close()
-                state.winnr = nil
+            -- Guard: M.close() may have already cleared this tab's entry
+            if state.tab_wins[tabid] == winnr then
+                state.tab_wins[tabid] = nil
+            end
+            -- Only delete shared buffers once every tab's panel is gone
+            if vim.tbl_isempty(state.tab_wins) then
                 for _, bufnr in pairs(state.bufs) do
                     if util.is_buf_valid(bufnr) then
                         pcall(api.nvim_buf_delete, bufnr, { force = true })
