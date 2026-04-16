@@ -276,11 +276,13 @@ M.run_query = function(sql)
             elapsed_ms = elapsed,
         }
 
-        -- Extract column order from first row
+        -- Extract column order from first row; coerce keys to strings so that
+        -- queries like `SELECT 1, 2` (which produce numeric keys) don't break
+        -- the results renderer.
         if #rows > 0 then
             local cols = {}
             for k in pairs(rows[1]) do
-                table.insert(cols, k)
+                table.insert(cols, tostring(k))
             end
             table.sort(cols)
             state.results_schema = cols
