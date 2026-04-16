@@ -17,6 +17,7 @@ local function define()
     hl("Loading",     "Comment")
     hl("MissingData", "DiagnosticVirtualTextWarn")
     hl("BorderChar",  "Comment")
+    hl("Hint",        "Comment")
 end
 
 define()
